@@ -1,0 +1,148 @@
+name: CI/CD Deploy
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+env:
+  DEPLOY_PORT: 3000
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Next.js app
+        run: npm run build
+        env:
+          NODE_ENV: production
+
+      - name: Create deployment archive
+        run: |
+          mkdir -p deploy-package
+          
+          # Copy all necessary files
+          cp -r .next deploy-package/
+          cp -r src deploy-package/
+          cp package.json deploy-package/
+          cp package-lock.json deploy-package/
+          cp -r node_modules deploy-package/
+          cp server.js deploy-package/
+          cp -r tailwind.config.ts deploy-package/
+          cp -r postcss.config.js deploy-package/
+          cp -r tsconfig.json deploy-package/
+          cp next.config.js deploy-package/
+          
+          # Create tarball
+          tar -czvf hmi-deploy.tar.gz -C deploy-package .
+          
+          echo "Build completed successfully!"
+
+      - name: Deploy to VPS
+        uses: appleboy/scp-action@master
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          port: ${{ secrets.VPS_PORT || '22' }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          source: "hmi-deploy.tar.gz"
+          target: "${{ secrets.DEPLOY_PATH }}"
+          overwrite: true
+
+      - name: Deploy & Restart App
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          port: ${{ secrets.VPS_PORT || '22' }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            set -e
+            
+            DEPLOY_DIR="${{ secrets.DEPLOY_PATH }}"
+            APP_NAME="hmi-dashboard"
+            PORT=${{ env.DEPLOY_PORT }}
+            
+            echo "=== Starting deployment ==="
+            echo "Deploy directory: $DEPLOY_DIR"
+            echo "Port: $PORT"
+            
+            # Stop existing PM2 process
+            echo "Stopping existing PM2 process..."
+            pm2 stop $APP_NAME 2>/dev/null || true
+            pm2 delete $APP_NAME 2>/dev/null || true
+            
+            # Extract deployment
+            echo "Extracting deployment..."
+            cd $DEPLOY_DIR
+            rm -rf .next src node_modules 2>/dev/null || true
+            tar -xzvf hmi-deploy.tar.gz
+            rm hmi-deploy.tar.gz
+            
+            # Install dependencies
+            echo "Installing dependencies..."
+            npm install --production
+            
+            # Setup Nginx for reverse proxy
+            echo "Setting up Nginx..."
+            cat > /etc/nginx/sites-available/$APP_NAME << 'NGINX'
+            server {
+                listen 80;
+                server_name ${{ secrets.VPS_DOMAIN }};
+            
+                location / {
+                    proxy_pass http://127.0.0.1:$PORT;
+                    proxy_http_version 1.1;
+                    proxy_set_header Upgrade $http_upgrade;
+                    proxy_set_header Connection 'upgrade';
+                    proxy_set_header Host $host;
+                    proxy_set_header X-Real-IP $remote_addr;
+                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto $scheme;
+                    proxy_cache_bypass $http_upgrade;
+                    proxy_read_timeout 86400;
+                }
+            }
+            NGINX
+            
+            # Enable site
+            ln -sf /etc/nginx/sites-available/$APP_NAME /etc/nginx/sites-enabled/
+            
+            # Test nginx config
+            nginx -t
+            
+            # Reload nginx
+            systemctl reload nginx
+            
+            # Install SSL with Certbot
+            echo "Installing SSL certificate..."
+            certbot --nginx -d ${{ secrets.VPS_DOMAIN }} --non-interactive --agree-tos --email ${{ secrets.SSL_EMAIL }} --redirect || true
+            
+            # Start PM2
+            echo "Starting PM2..."
+            PORT=$PORT pm2 start server.js --name $APP_NAME --node-args=" --max-old-space-size=512 "
+            
+            # Save PM2 config
+            pm2 save
+            
+            # Setup PM2 startup
+            pm2 startup systemd 2>/dev/null || true
+            
+            echo "=== Deployment completed! ==="
+            echo "App running on: https://${{ secrets.VPS_DOMAIN }}"
+            
+            pm2 status
