@@ -14,6 +14,7 @@ import {
   CheckCircle2,
   Bell,
   BellRing,
+  VolumeX,
 } from 'lucide-react';
 
 function useAudioAlarm() {
