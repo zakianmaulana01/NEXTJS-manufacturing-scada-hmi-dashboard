@@ -20,7 +20,7 @@ function useAudioAlarm() {
   const audioContextRef = useRef<AudioContext | null>(null);
   const isPlayingRef = useRef(false);
 
-  const playBeep = useCallback(() => {
+  const playAlarm = useCallback(() => {
     if (isPlayingRef.current) return;
     
     try {
@@ -35,38 +35,67 @@ function useAudioAlarm() {
       
       isPlayingRef.current = true;
       
-      const playTone = (startTime: number, freq: number, duration: number) => {
-        const oscillator = audioContext.createOscillator();
-        const gainNode = audioContext.createGain();
-        
-        oscillator.connect(gainNode);
-        gainNode.connect(audioContext.destination);
-        
-        oscillator.frequency.value = freq;
-        oscillator.type = 'square';
-        
-        gainNode.gain.setValueAtTime(0.15, startTime);
-        gainNode.gain.exponentialRampToValueAtTime(0.01, startTime + duration);
-        
-        oscillator.start(startTime);
-        oscillator.stop(startTime + duration);
+      const now = audioContext.currentTime;
+      
+      const playSiren = () => {
+        for (let i = 0; i < 3; i++) {
+          const startTime = now + (i * 0.5);
+          
+          const osc1 = audioContext.createOscillator();
+          const osc2 = audioContext.createOscillator();
+          const gainNode = audioContext.createGain();
+          const distortion = audioContext.createWaveShaper();
+          
+          const curve = new Float32Array(256);
+          for (let j = 0; j < 256; j++) {
+            const x = (j / 128) - 1;
+            curve[j] = Math.tanh(x * 2);
+          }
+          distortion.curve = curve;
+          
+          osc1.connect(distortion);
+          osc2.connect(distortion);
+          distortion.connect(gainNode);
+          gainNode.connect(audioContext.destination);
+          
+          osc1.type = 'sawtooth';
+          osc2.type = 'square';
+          
+          osc1.frequency.setValueAtTime(800, startTime);
+          osc1.frequency.linearRampToValueAtTime(1200, startTime + 0.1);
+          osc1.frequency.linearRampToValueAtTime(800, startTime + 0.2);
+          osc1.frequency.linearRampToValueAtTime(1200, startTime + 0.3);
+          
+          osc2.frequency.setValueAtTime(810, startTime);
+          osc2.frequency.linearRampToValueAtTime(1210, startTime + 0.1);
+          osc2.frequency.linearRampToValueAtTime(810, startTime + 0.2);
+          osc2.frequency.linearRampToValueAtTime(1210, startTime + 0.3);
+          
+          gainNode.gain.setValueAtTime(0.25, startTime);
+          gainNode.gain.linearRampToValueAtTime(0.35, startTime + 0.05);
+          gainNode.gain.linearRampToValueAtTime(0.25, startTime + 0.15);
+          gainNode.gain.linearRampToValueAtTime(0.35, startTime + 0.25);
+          gainNode.gain.linearRampToValueAtTime(0.01, startTime + 0.4);
+          
+          osc1.start(startTime);
+          osc1.stop(startTime + 0.4);
+          osc2.start(startTime);
+          osc2.stop(startTime + 0.4);
+        }
       };
       
-      const now = audioContext.currentTime;
-      playTone(now, 880, 0.15);
-      playTone(now + 0.2, 880, 0.15);
-      playTone(now + 0.4, 880, 0.15);
+      playSiren();
       
       setTimeout(() => {
         isPlayingRef.current = false;
-      }, 800);
+      }, 1800);
       
     } catch (e) {
       console.log('Audio not available');
     }
   }, []);
 
-  return { playBeep };
+  return { playAlarm };
 }
 
 export default function Home() {
@@ -79,7 +108,7 @@ export default function Home() {
   const [timeStr, setTimeStr] = useState('00:00:00');
   const [lastAlarmCount, setLastAlarmCount] = useState(0);
   
-  const { playBeep } = useAudioAlarm();
+  const { playAlarm } = useAudioAlarm();
   const prevStationsRef = useRef<StationData[]>([]);
 
   useEffect(() => {
@@ -128,7 +157,7 @@ export default function Home() {
         const newOfflineStations = data.filter(s => s.plcStatus === 'OFFLINE' && !prevOfflineIds.has(s.id));
         
         if (newOfflineStations.length > 0 && !muteAlarms) {
-          playBeep();
+          playAlarm();
         }
         
         prevStationsRef.current = data;
@@ -145,7 +174,7 @@ export default function Home() {
         clearTimeout(reconnectTimer);
       }
     };
-  }, [muteAlarms, playBeep]);
+  }, [muteAlarms, playAlarm]);
 
   const handleTogglePlc = (id: string) => {
     if (stations.length > 0) {
@@ -223,11 +252,11 @@ export default function Home() {
   useEffect(() => {
     if ((hasAlarms || hasNgAlarms) && !muteAlarms) {
       const interval = setInterval(() => {
-        playBeep();
+        playAlarm();
       }, 3000);
       return () => clearInterval(interval);
     }
-  }, [hasAlarms, hasNgAlarms, muteAlarms, playBeep]);
+  }, [hasAlarms, hasNgAlarms, muteAlarms, playAlarm]);
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-200 font-sans flex flex-col select-none selection:bg-sky-600 selection:text-white">
